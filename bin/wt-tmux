@@ -1,0 +1,404 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+readonly SELF
+readonly WT_BIN="${WT_BIN:-$(command -v wt || true)}"
+readonly AGENT_COMMAND="${WT_TMUX_AGENT:-claude}"
+readonly EDITOR_COMMAND="${WT_TMUX_EDITOR:-nvim .}"
+
+usage() {
+  cat <<'EOF'
+Usage: wt-tmux <command> [arguments]
+
+Commands:
+  open-ui                             Interactive tmux-menu entry points
+  feature-ui
+  pr-ui
+  branch-from-pr-ui
+  merge-ui
+  remove-ui
+  open <path>                         Pick a worktree and open its tmux session
+  feature <path> <branch> [base]      Create a feature branch (base defaults to ^)
+  pr <path> <number>                  Open a GitHub pull request worktree
+  branch-from-pr <path> <branch> <n>  Create a branch based on a GitHub PR
+  session [path]                      Create or reuse the three-pane tmux session
+  list <path>                         Show worktree status
+  commit <path>                       Commit with Worktrunk
+  publish <path>                      Push and create a GitHub pull request
+  merge <path>                        Merge to the default branch and clean up
+  remove <path>                       Remove the current worktree and clean up
+  help                                Show this guide
+
+Environment:
+  WT_TMUX_AGENT   Command for the left pane (default: claude)
+  WT_TMUX_EDITOR  Command for the top-right pane (default: nvim .)
+EOF
+}
+
+pause_popup() {
+  if [[ -t 0 ]]; then
+    printf '\nPress any key to close…'
+    IFS= read -r -n 1 _ || true
+    printf '\n'
+  fi
+}
+
+die() {
+  printf 'wt-tmux: %s\n' "$*" >&2
+  pause_popup
+  exit 1
+}
+
+require_wt() {
+  [[ -n "$WT_BIN" ]] || die "wt is not installed or is not on PATH"
+}
+
+tmux_cmd() {
+  if [[ -n "${WT_TMUX_SOCKET:-}" ]]; then
+    command tmux -L "$WT_TMUX_SOCKET" "$@"
+  else
+    command tmux "$@"
+  fi
+}
+
+canonical_path() {
+  local path="$1"
+  (cd "$path" 2>/dev/null && pwd -P) || die "directory does not exist: $path"
+}
+
+require_repo() {
+  local path
+  path="$(canonical_path "$1")"
+  git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
+    die "not inside a Git worktree: $path"
+  printf '%s\n' "$path"
+}
+
+slug() {
+  printf '%s' "$1" |
+    tr '[:upper:]' '[:lower:]' |
+    sed -E 's/[^a-z0-9_-]+/-/g; s/^-+//; s/-+$//'
+}
+
+short_hash() {
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | cut -c1-6
+  else
+    printf '%s' "$1" | cksum | awk '{printf "%06x", $1}' | cut -c1-6
+  fi
+}
+
+session_name_for() {
+  local path="$1" common_dir remote repo branch repo_slug branch_slug hash
+  common_dir="$(git -C "$path" rev-parse --path-format=absolute --git-common-dir)"
+  remote="$(git -C "$path" remote get-url origin 2>/dev/null || true)"
+  if [[ -n "$remote" ]]; then
+    repo="${remote##*/}"
+    repo="${repo%.git}"
+  else
+    repo="$(basename "$(git -C "$path" rev-parse --show-toplevel)")"
+  fi
+  branch="$(git -C "$path" branch --show-current)"
+  [[ -n "$branch" ]] || die "detached HEAD worktrees are not supported"
+  repo_slug="$(slug "$repo")"
+  branch_slug="$(slug "$branch")"
+  [[ -n "$repo_slug" ]] || repo_slug="repo"
+  [[ -n "$branch_slug" ]] || branch_slug="branch"
+  hash="$(short_hash "$common_dir:$branch")"
+  printf 'wt-%s-%s-%s\n' "${repo_slug:0:18}" "${branch_slug:0:28}" "$hash"
+}
+
+send_command() {
+  local pane="$1" command_text="$2"
+  [[ -n "$command_text" ]] || return 0
+  tmux_cmd send-keys -t "$pane" -l "$command_text"
+  tmux_cmd send-keys -t "$pane" Enter
+}
+
+ensure_session() {
+  local path="$1" session first_pane editor_pane shell_pane
+  session="$(session_name_for "$path")"
+  if tmux_cmd has-session -t "=$session" 2>/dev/null; then
+    printf '%s\n' "$session"
+    return 0
+  fi
+
+  tmux_cmd new-session -d -s "$session" -n dev -c "$path" -x 220 -y 50
+  first_pane="$(tmux_cmd list-panes -t "=$session:dev" -F '#{pane_id}' | head -n 1)"
+  tmux_cmd select-pane -t "$first_pane" -T agent
+  send_command "$first_pane" "$AGENT_COMMAND"
+
+  editor_pane="$(tmux_cmd split-window -t "$first_pane" -h -p 45 -c "$path" -P -F '#{pane_id}')"
+  tmux_cmd select-pane -t "$editor_pane" -T editor
+  send_command "$editor_pane" "$EDITOR_COMMAND"
+
+  shell_pane="$(tmux_cmd split-window -t "$editor_pane" -v -p 45 -c "$path" -P -F '#{pane_id}')"
+  tmux_cmd select-pane -t "$shell_pane" -T shell
+  tmux_cmd select-pane -t "$first_pane"
+  printf '%s\n' "$session"
+}
+
+switch_or_attach() {
+  local session="$1"
+  if [[ "${WT_TMUX_NO_ATTACH:-0}" == "1" ]]; then
+    return 0
+  fi
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux_cmd switch-client -t "=$session"
+  else
+    tmux_cmd attach-session -t "=$session"
+  fi
+}
+
+open_session() {
+  local path session
+  path="$(require_repo "${1:-$PWD}")"
+  session="$(ensure_session "$path")"
+  switch_or_attach "$session"
+}
+
+run_and_pause() {
+  local status
+  set +e
+  "$@"
+  status=$?
+  set -e
+  pause_popup
+  return "$status"
+}
+
+run_ui() {
+  local status
+  set +e
+  "$@"
+  status=$?
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    pause_popup
+  fi
+  return "$status"
+}
+
+read_required() {
+  local prompt="$1" value
+  IFS= read -r -p "$prompt" value
+  [[ -n "$value" ]] || die "a value is required"
+  printf '%s\n' "$value"
+}
+
+confirm_action() {
+  local prompt="$1" answer
+  IFS= read -r -p "$prompt [y/N] " answer
+  [[ "$answer" == "y" || "$answer" == "Y" ]]
+}
+
+main_context() {
+  local path="$1" json context
+  command -v jq >/dev/null 2>&1 || die "jq is required for merge and remove"
+  json="$("$WT_BIN" -C "$path" list --format json)"
+  context="$(printf '%s' "$json" | jq -r '.[] | select(.is_main == true) | [.branch, .path] | @tsv' | head -n 1)"
+  [[ -n "$context" ]] || die "could not find the default worktree"
+  printf '%s\n' "$context"
+}
+
+finish_lifecycle() {
+  local source_session="$1" target_path="$2" target_session
+  target_session="$(ensure_session "$target_path")"
+
+  if [[ "${WT_TMUX_NO_ATTACH:-0}" == "1" ]]; then
+    [[ "$source_session" == "$target_session" ]] || tmux_cmd kill-session -t "=$source_session" 2>/dev/null || true
+    return 0
+  fi
+
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux_cmd switch-client -t "=$target_session"
+    [[ "$source_session" == "$target_session" ]] || tmux_cmd kill-session -t "=$source_session" 2>/dev/null || true
+  else
+    [[ "$source_session" == "$target_session" ]] || tmux_cmd kill-session -t "=$source_session" 2>/dev/null || true
+    tmux_cmd attach-session -t "=$target_session"
+  fi
+}
+
+command_open() {
+  local path selection selected_path status
+  require_wt
+  path="$(require_repo "$1")"
+  command -v jq >/dev/null 2>&1 || die "jq is required for the worktree picker"
+
+  set +e
+  selection="$("$WT_BIN" -C "$path" switch --branches --remotes --no-cd --format json)"
+  status=$?
+  set -e
+  [[ "$status" -eq 0 ]] || return "$status"
+  [[ -n "$selection" ]] || return 0
+
+  selected_path="$(printf '%s' "$selection" | jq -r '.path // empty')"
+  [[ -n "$selected_path" ]] || die "Worktrunk did not return a worktree path"
+  open_session "$selected_path"
+}
+
+command_feature() {
+  local path branch base
+  require_wt
+  path="$(require_repo "$1")"
+  branch="$2"
+  base="${3:-^}"
+  [[ -n "$branch" ]] || die "feature branch name cannot be empty"
+  "$WT_BIN" -C "$path" switch --create "$branch" --base "$base" --execute "$SELF" -- session
+}
+
+command_pr() {
+  local path number
+  require_wt
+  path="$(require_repo "$1")"
+  number="$2"
+  [[ "$number" =~ ^[0-9]+$ ]] || die "PR number must contain only digits"
+  "$WT_BIN" -C "$path" switch "pr:$number" --execute "$SELF" -- session
+}
+
+command_branch_from_pr() {
+  local path branch number
+  require_wt
+  path="$(require_repo "$1")"
+  branch="$2"
+  number="$3"
+  [[ -n "$branch" ]] || die "feature branch name cannot be empty"
+  [[ "$number" =~ ^[0-9]+$ ]] || die "PR number must contain only digits"
+  "$WT_BIN" -C "$path" switch --create "$branch" --base "pr:$number" --execute "$SELF" -- session
+}
+
+command_list() {
+  local path
+  require_wt
+  path="$(require_repo "$1")"
+  if command -v less >/dev/null 2>&1; then
+    "$WT_BIN" -C "$path" list --full | less -R
+  else
+    run_and_pause "$WT_BIN" -C "$path" list --full
+  fi
+}
+
+command_publish() {
+  local path branch status
+  path="$(require_repo "$1")"
+  command -v gh >/dev/null 2>&1 || die "gh is required to create a pull request"
+  branch="$(git -C "$path" branch --show-current)"
+  [[ -n "$branch" ]] || die "cannot publish a detached HEAD"
+
+  set +e
+  git -C "$path" push --set-upstream origin "$branch" && (cd "$path" && gh pr create)
+  status=$?
+  set -e
+  pause_popup
+  return "$status"
+}
+
+command_merge() {
+  local path context default_branch default_path source_session status
+  require_wt
+  path="$(require_repo "$1")"
+  context="$(main_context "$path")"
+  IFS=$'\t' read -r default_branch default_path <<<"$context"
+  [[ "$path" != "$default_path" ]] || die "the default worktree '$default_branch' cannot be merged into itself"
+  source_session="$(session_name_for "$path")"
+
+  set +e
+  "$WT_BIN" -C "$path" merge "$default_branch"
+  status=$?
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    pause_popup
+    return "$status"
+  fi
+  finish_lifecycle "$source_session" "$default_path"
+}
+
+command_remove() {
+  local path context default_branch default_path source_session status
+  require_wt
+  path="$(require_repo "$1")"
+  context="$(main_context "$path")"
+  IFS=$'\t' read -r default_branch default_path <<<"$context"
+  [[ "$path" != "$default_path" ]] || die "the default worktree '$default_branch' cannot be removed"
+  source_session="$(session_name_for "$path")"
+
+  set +e
+  "$WT_BIN" -C "$path" remove --foreground
+  status=$?
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    pause_popup
+    return "$status"
+  fi
+  finish_lifecycle "$source_session" "$default_path"
+}
+
+command_feature_ui() {
+  local branch base
+  branch="$(read_required 'Feature branch: ')"
+  IFS= read -r -p 'Base branch [default]: ' base
+  command_feature "$PWD" "$branch" "${base:-^}"
+}
+
+command_pr_ui() {
+  local number
+  number="$(read_required 'GitHub PR number: ')"
+  command_pr "$PWD" "$number"
+}
+
+command_branch_from_pr_ui() {
+  local branch number
+  branch="$(read_required 'New branch: ')"
+  number="$(read_required 'Base GitHub PR number: ')"
+  command_branch_from_pr "$PWD" "$branch" "$number"
+}
+
+command_merge_ui() {
+  local branch
+  branch="$(git -C "$PWD" branch --show-current 2>/dev/null || true)"
+  printf 'Merge %s into the default branch?\n\n' "${branch:-current worktree}"
+  if confirm_action 'Worktrunk may commit, squash, rebase, merge, and remove this worktree.'; then
+    command_merge "$PWD"
+  fi
+}
+
+command_remove_ui() {
+  local branch
+  branch="$(git -C "$PWD" branch --show-current 2>/dev/null || true)"
+  printf 'Remove worktree for %s?\n\n' "${branch:-current branch}"
+  if confirm_action 'The branch is deleted only when Worktrunk considers that safe.'; then
+    command_remove "$PWD"
+  fi
+}
+
+main() {
+  local command_name="${1:-help}"
+  shift || true
+  case "$command_name" in
+    open-ui) [[ $# -eq 0 ]] || die "open-ui takes no arguments"; run_ui command_open "$PWD" ;;
+    feature-ui) [[ $# -eq 0 ]] || die "feature-ui takes no arguments"; run_ui command_feature_ui ;;
+    pr-ui) [[ $# -eq 0 ]] || die "pr-ui takes no arguments"; run_ui command_pr_ui ;;
+    branch-from-pr-ui) [[ $# -eq 0 ]] || die "branch-from-pr-ui takes no arguments"; run_ui command_branch_from_pr_ui ;;
+    merge-ui) [[ $# -eq 0 ]] || die "merge-ui takes no arguments"; command_merge_ui ;;
+    remove-ui) [[ $# -eq 0 ]] || die "remove-ui takes no arguments"; command_remove_ui ;;
+    list-ui) [[ $# -eq 0 ]] || die "list-ui takes no arguments"; command_list "$PWD" ;;
+    commit-ui) [[ $# -eq 0 ]] || die "commit-ui takes no arguments"; require_wt; run_and_pause "$WT_BIN" -C "$(require_repo "$PWD")" step commit ;;
+    publish-ui) [[ $# -eq 0 ]] || die "publish-ui takes no arguments"; command_publish "$PWD" ;;
+    help-ui) [[ $# -eq 0 ]] || die "help-ui takes no arguments"; usage; pause_popup ;;
+    open) [[ $# -eq 1 ]] || die "open requires <path>"; command_open "$@" ;;
+    feature) [[ $# -ge 2 && $# -le 3 ]] || die "feature requires <path> <branch> [base]"; command_feature "$@" ;;
+    pr) [[ $# -eq 2 ]] || die "pr requires <path> <number>"; command_pr "$@" ;;
+    branch-from-pr) [[ $# -eq 3 ]] || die "branch-from-pr requires <path> <branch> <number>"; command_branch_from_pr "$@" ;;
+    session) [[ $# -le 1 ]] || die "session accepts at most [path]"; open_session "${1:-$PWD}" ;;
+    list) [[ $# -eq 1 ]] || die "list requires <path>"; command_list "$@" ;;
+    commit) [[ $# -eq 1 ]] || die "commit requires <path>"; require_wt; run_and_pause "$WT_BIN" -C "$(require_repo "$1")" step commit ;;
+    publish) [[ $# -eq 1 ]] || die "publish requires <path>"; command_publish "$@" ;;
+    merge) [[ $# -eq 1 ]] || die "merge requires <path>"; command_merge "$@" ;;
+    remove) [[ $# -eq 1 ]] || die "remove requires <path>"; command_remove "$@" ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; die "unknown command: $command_name" ;;
+  esac
+}
+
+main "$@"
