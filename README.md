@@ -79,42 +79,175 @@ Open the menu with your normal tmux prefix followed by `m`. For example,
 
 The menu also retains common tmux window, pane, session, and detach actions.
 
-## Workflows
+## End-to-end walkthrough
 
-### Start a feature
-
-1. Open the menu and press `N`.
-2. Enter a branch name such as `feature/auth`.
-3. Leave the base empty to use the repository default branch, or enter another
-   branch, `@` for the current branch, or `pr:123`.
-4. Worktrunk creates the branch/worktree and the helper opens its three-pane
-   tmux session.
-
-### Open an existing branch or worktree
-
-Press `w` to open Worktrunk's interactive picker. Selecting a branch creates its
-worktree when necessary, then creates or reuses the matching tmux session.
-
-### Review a GitHub PR
-
-Press `R`, enter the PR number, and Worktrunk resolves `pr:<number>`. This requires
-an authenticated GitHub CLI:
+This walkthrough uses this repository as an example. Start inside tmux in the
+repository's default worktree:
 
 ```bash
-gh auth status
+cd ~/src/worktree-tmux-menu
+git status
 ```
 
-### Publish a PR
+All worktree menu commands use the active pane's current directory to identify
+the repository. Open the menu with your tmux prefix followed by `m` (normally
+`Ctrl+b m`).
 
-Use `C` to commit, then `G` to push and run the interactive `gh pr create` flow.
-After the PR is merged remotely, use `X` to remove the local worktree.
+### 1. Check the repository worktrees
 
-### Merge locally
+Press `W` for **wt: worktree status**. The popup runs:
 
-Press `M`. Worktrunk's normal merge policy may commit, squash, rebase, run hooks,
-fast-forward the default branch, and remove the feature worktree. After success,
-the helper opens the default-branch session and closes the completed feature
-session. A failed or cancelled merge leaves the current session intact.
+```bash
+wt list --full
+```
+
+This shows the default worktree, feature worktrees, their branches, and their
+current state. Press `q` to close the pager.
+
+### 2. Create a feature worktree
+
+1. Open the menu and press `N`.
+2. At `Feature branch:`, enter a name such as `docs/menu-walkthrough`.
+3. At `Base branch [default]:`, press Enter to use the repository's default
+   branch. You can instead enter another branch, `@` for the current branch, or
+   `pr:123` to use a GitHub PR as the base.
+4. Worktrunk creates the branch and its worktree.
+5. The helper creates and switches to a tmux session for that worktree.
+
+The new session contains three panes:
+
+```text
+┌──────────────────────┬──────────────────────┐
+│                      │ editor               │
+│ coding agent         ├──────────────────────┤
+│                      │ shell                │
+└──────────────────────┴──────────────────────┘
+```
+
+The panes all start in the new worktree. The left pane runs `WT_TMUX_AGENT`, the
+top-right pane runs `WT_TMUX_EDITOR`, and the bottom-right pane is a normal shell.
+If the session already exists, the helper reuses it instead of creating duplicate
+panes.
+
+### 3. Make and inspect changes
+
+Edit files in the agent or editor pane. In the shell pane, normal Git commands
+still work:
+
+```bash
+git status
+git diff
+```
+
+Press `W` at any time to see the Worktrunk view of every worktree in the
+repository.
+
+### 4. Commit the changes
+
+Open the menu and press `C` for **wt: commit changes**. The popup runs:
+
+```bash
+wt step commit
+```
+
+Follow the Worktrunk prompts to select and commit the changes. The popup remains
+open when it needs you to inspect output or acknowledge an error.
+
+### 5. Publish a GitHub pull request
+
+1. Make sure `gh auth status` succeeds.
+2. Open the menu and press `G` for **wt: publish GitHub PR**.
+3. The helper pushes the current branch with an upstream:
+
+   ```bash
+   git push --set-upstream origin docs/menu-walkthrough
+   ```
+
+4. It then starts the interactive `gh pr create` flow. Choose the PR title and
+   body and confirm creation.
+
+### 6. Finish the work
+
+Choose one of these paths; do not use both for the same feature worktree.
+
+#### Merge locally with Worktrunk
+
+1. Press `M` for **wt: merge into default branch**.
+2. Review the confirmation and enter `y`.
+3. Worktrunk applies its configured merge policy. It may commit, squash, rebase,
+   run hooks, update the default branch, and remove the feature worktree.
+4. After success, the helper creates or reuses the default-branch tmux session,
+   switches to it, and closes the completed feature session.
+
+If the merge fails or is cancelled, the worktree and current tmux session remain
+available so you can fix the problem.
+
+#### Merge on GitHub, then clean up locally
+
+1. Merge the pull request on GitHub.
+2. Return to the feature worktree's tmux session.
+3. Press `X` for **wt: remove current worktree**.
+4. Review the confirmation and enter `y`.
+5. Worktrunk removes the worktree when it considers that safe. The helper then
+   switches to the default-branch session and closes the removed worktree's
+   session.
+
+The default worktree cannot be removed with `X` or merged into itself with `M`.
+
+## Other worktree workflows
+
+### Open an existing worktree or branch
+
+Press `w` to open Worktrunk's interactive picker. It includes existing
+worktrees, local branches, and remote branches. Selecting a branch creates its
+worktree when necessary and then creates or reuses its tmux session.
+
+### Review a GitHub PR without creating a feature branch
+
+1. Confirm that `gh auth status` succeeds.
+2. Press `R` and enter only the numeric PR number, such as `123`.
+3. Worktrunk resolves `pr:123`, creates or selects its worktree, and opens its
+   tmux session.
+
+### Start new work based on a GitHub PR
+
+1. Press `B`.
+2. Enter a new local branch name.
+3. Enter the numeric PR number to use as the base.
+4. Worktrunk creates the new branch with `pr:<number>` as its base and opens the
+   new worktree session.
+
+This is useful when you want to modify or extend a PR without working directly
+on its head branch.
+
+### Get help inside tmux
+
+Press `H` to show the helper's command guide. The same guide is available from a
+shell:
+
+```bash
+~/.local/bin/wt-tmux help
+```
+
+## How the menu works
+
+The flow for every `wt:` menu item is:
+
+```text
+prefix + m
+    -> tmux opens a popup in the active pane's directory
+    -> the popup runs ~/.local/bin/wt-tmux
+    -> wt-tmux asks Worktrunk to manage the branch/worktree
+    -> wt-tmux creates, reuses, switches, or removes the matching tmux session
+```
+
+`tmux/worktree-menu.conf.in` defines the complete menu. `install.sh` replaces the
+helper path placeholder, writes the generated menu to
+`~/.config/tmux/worktree-menu.conf`, sources it from `~/.tmux.conf`, and reloads
+tmux. `bin/wt-tmux` implements the worktree and session behavior. `tests/test.sh`
+uses a temporary home directory and isolated tmux server to verify installation,
+configuration loading, session reuse, and uninstallation without changing your
+real tmux configuration.
 
 ## Configuration
 
