@@ -77,7 +77,19 @@ Open the menu with your normal tmux prefix followed by `m`. For example,
 | `X` | Remove worktree | Safely run `wt remove` and clean up its session |
 | `H` | Command guide | Show helper commands and configuration |
 
-The menu also retains common tmux window, pane, session, and detach actions.
+The menu also retains common tmux window and pane actions. Its session actions
+are:
+
+| Key | Action | What it does |
+| --- | --- | --- |
+| `S` | New session | Prompt for a name and create a session in the current directory |
+| `s` | List sessions | Choose and switch to another tmux session |
+| `K` | Delete session | Confirm, then stop the current session and all programs in it |
+| `d` | Detach | Disconnect the client while leaving the session running |
+
+Deleting a tmux session with `K` does not delete its Git branch or Worktrunk
+worktree. Use `X` when you intend to remove a worktree and clean up its matching
+session together.
 
 ## End-to-end walkthrough
 

@@ -54,6 +54,7 @@ fi
 tmux -L "$SOCKET" -f /dev/null new-session -d -s config-test -c "$TEST_HOME"
 tmux -L "$SOCKET" source-file "$TEST_HOME/.tmux.conf"
 tmux -L "$SOCKET" list-keys -T prefix m | grep -q 'wt: open/switch worktree'
+tmux -L "$SOCKET" list-keys -T prefix m | grep -q 'Delete session.*kill-session'
 
 git init -q -b main "$TEST_REPO"
 git -C "$TEST_REPO" config user.name test
