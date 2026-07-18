@@ -12,6 +12,7 @@ bind-key m display-menu -T "tmux: windows, panes, worktrees" \
   "Zoom pane"         z "resize-pane -Z" \
   "Close pane"        x "confirm-before kill-pane" \
   "" \
+  "New session"       S "command-prompt -p 'New session name:' 'new-session -s \"%%\" -c \"#{pane_current_path}\"'" \
   "List sessions"     s "choose-session" \
   "Detach"            d "detach-client" \
   "" \
