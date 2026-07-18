@@ -1,7 +1,8 @@
 # worktree-tmux-menu
 
 A tmux command palette for [Worktrunk](https://worktrunk.dev). Create, open,
-review, publish, merge, and remove Git worktrees without leaving tmux.
+review, publish, merge, and remove Git worktrees without leaving tmux — all from
+a single keystroke-driven menu.
 
 Each worktree gets one reusable tmux session with three panes:
 
