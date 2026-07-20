@@ -217,3 +217,6 @@ opening one worktree twice still produces exactly three panes.
 ## License
 
 [MIT](LICENSE)
+
+<!-- wt-menu test commit: 2026-07-20 -->
+
