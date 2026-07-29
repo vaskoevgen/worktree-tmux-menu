@@ -25,6 +25,7 @@ do not collide.
 - tmux 3.2+
 - Git
 - [Worktrunk](https://worktrunk.dev) (`wt`)
+- `fzf`
 - `jq`
 - Optional: `gh` for GitHub PR actions
 - Optional: Claude and Neovim, or configure other pane commands
@@ -32,7 +33,7 @@ do not collide.
 Example installation on macOS:
 
 ```bash
-brew install tmux git jq gh worktrunk
+brew install tmux git fzf jq gh worktrunk
 wt config shell install
 gh auth login
 ```
@@ -66,10 +67,10 @@ Open the menu with your normal tmux prefix followed by `m`. For example,
 
 | Key | Action | What it does |
 | --- | --- | --- |
-| `w` | Open/switch worktree | Pick an existing worktree, local branch, or remote branch |
-| `N` | New feature branch | Create a worktree from the default or specified base |
-| `R` | Review GitHub PR | Open `pr:<number>` as a worktree |
-| `B` | New branch from PR | Create a new branch based on a PR head |
+| `w` | Open/switch worktree | Search repositories, then pick a worktree or branch |
+| `N` | New feature branch | Choose a repository and create a worktree from the default or specified base |
+| `R` | Review GitHub PR | Choose a repository and open `pr:<number>` as a worktree |
+| `B` | New branch from PR | Choose a repository and create a new branch based on a PR head |
 | `W` | Worktree status | Show `wt list --full` |
 | `C` | Commit changes | Run `wt step commit` |
 | `G` | Publish GitHub PR | Push the current branch and run `gh pr create` |
@@ -101,9 +102,10 @@ cd ~/src/worktree-tmux-menu
 git status
 ```
 
-All worktree menu commands use the active pane's current directory to identify
-the repository. Open the menu with your tmux prefix followed by `m` (normally
-`Ctrl+b m`).
+Worktree menu commands use the active pane's current directory to identify the
+repository. The `w` action opens a searchable repository picker with that
+repository selected by default. Open the menu with your tmux prefix followed by
+`m` (normally `Ctrl+b m`).
 
 ### 1. Check the repository worktrees
 
@@ -119,12 +121,13 @@ current state. Press `q` to close the pager.
 ### 2. Create a feature worktree
 
 1. Open the menu and press `N`.
-2. At `Feature branch:`, enter a name such as `docs/menu-walkthrough`.
-3. At `Base branch [default]:`, press Enter to use the repository's default
+2. Choose a repository, or press Enter to keep the current repository.
+3. At `Feature branch:`, enter a name such as `docs/menu-walkthrough`.
+4. At `Base branch [default]:`, press Enter to use the repository's default
    branch. You can instead enter another branch, `@` for the current branch, or
    `pr:123` to use a GitHub PR as the base.
-4. Worktrunk creates the branch and its worktree.
-5. The helper creates and switches to a tmux session for that worktree.
+5. Worktrunk creates the branch and its worktree.
+6. The helper creates and switches to a tmux session for that worktree.
 
 The new session contains three panes:
 
@@ -210,23 +213,30 @@ The default worktree cannot be removed with `X` or merged into itself with `M`.
 
 ### Open an existing worktree or branch
 
-Press `w` to open Worktrunk's interactive picker. It includes existing
-worktrees, local branches, and remote branches. Selecting a branch creates its
-worktree when necessary and then creates or reuses its tmux session.
+Press `w` to open the searchable repository picker. The repository containing
+the active pane is first and selected by default, so press Enter to keep using
+it. Type to filter entries, use the arrow keys to choose one, or press Escape to
+cancel. Entries marked `[repo]` open a repository, `[dir]` browse into a
+directory, and `[..]` moves to the parent directory. After choosing a repository,
+Worktrunk's picker includes existing worktrees, local branches, and remote
+branches. Selecting a branch creates its worktree when necessary and then
+creates or reuses its tmux session.
 
 ### Review a GitHub PR without creating a feature branch
 
 1. Confirm that `gh auth status` succeeds.
-2. Press `R` and enter only the numeric PR number, such as `123`.
-3. Worktrunk resolves `pr:123`, creates or selects its worktree, and opens its
+2. Press `R` and choose a repository, or press Enter for the current repository.
+3. Enter only the numeric PR number, such as `123`.
+4. Worktrunk resolves `pr:123`, creates or selects its worktree, and opens its
    tmux session.
 
 ### Start new work based on a GitHub PR
 
 1. Press `B`.
-2. Enter a new local branch name.
-3. Enter the numeric PR number to use as the base.
-4. Worktrunk creates the new branch with `pr:<number>` as its base and opens the
+2. Choose a repository, or press Enter for the current repository.
+3. Enter a new local branch name.
+4. Enter the numeric PR number to use as the base.
+5. Worktrunk creates the new branch with `pr:<number>` as its base and opens the
    new worktree session.
 
 This is useful when you want to modify or extend a PR without working directly
@@ -278,6 +288,19 @@ Other examples:
 set-environment -g WT_TMUX_AGENT "codex"
 set-environment -g WT_TMUX_EDITOR "vim ."
 ```
+
+By default, `w` starts browsing in the current repository's parent directory.
+You can move up with `[..]` or enter folders marked `[dir]`. Set a fixed initial
+directory when your repositories live together elsewhere:
+
+```tmux
+set-environment -g WT_TMUX_REPOS_DIR "$HOME/src"
+```
+
+Repository discovery scans one directory level at a time as you navigate, so it
+does not perform a slow recursive filesystem scan. Additional worktrees
+belonging to the same Git repository are omitted from the repository picker
+because Worktrunk shows them in the following worktree picker.
 
 Worktrunk controls where worktrees live. For sibling directories, put this in
 `~/.config/worktrunk/config.toml`:

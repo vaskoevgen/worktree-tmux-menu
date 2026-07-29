@@ -4,6 +4,7 @@ set -euo pipefail
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 readonly SELF
 readonly WT_BIN="${WT_BIN:-$(command -v wt || true)}"
+readonly FZF_BIN="${FZF_BIN:-$(command -v fzf || true)}"
 readonly AGENT_COMMAND="${WT_TMUX_AGENT:-claude}"
 readonly EDITOR_COMMAND="${WT_TMUX_EDITOR:-nvim .}"
 
@@ -33,6 +34,8 @@ Commands:
 Environment:
   WT_TMUX_AGENT   Command for the left pane (default: claude)
   WT_TMUX_EDITOR  Command for the top-right pane (default: nvim .)
+  WT_TMUX_REPOS_DIR
+                  Directory whose immediate children are offered as repositories
 EOF
 }
 
@@ -54,6 +57,10 @@ require_wt() {
   [[ -n "$WT_BIN" ]] || die "wt is not installed or is not on PATH"
 }
 
+require_fzf() {
+  [[ -n "$FZF_BIN" ]] || die "fzf is required for the repository picker"
+}
+
 tmux_cmd() {
   if [[ -n "${WT_TMUX_SOCKET:-}" ]]; then
     command tmux -L "$WT_TMUX_SOCKET" "$@"
@@ -67,12 +74,31 @@ canonical_path() {
   (cd "$path" 2>/dev/null && pwd -P) || die "directory does not exist: $path"
 }
 
+is_worktree() {
+  local result
+  result="$(git -C "$1" rev-parse --is-inside-work-tree 2>/dev/null || true)"
+  [[ "$result" == "true" ]]
+}
+
 require_repo() {
   local path
   path="$(canonical_path "$1")"
-  git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
+  is_worktree "$path" ||
     die "not inside a Git worktree: $path"
   printf '%s\n' "$path"
+}
+
+repo_root() {
+  local path
+  path="$(require_repo "$1")"
+  git -C "$path" rev-parse --show-toplevel
+}
+
+repo_common_dir() {
+  local path common_dir
+  path="$(require_repo "$1")"
+  common_dir="$(git -C "$path" rev-parse --path-format=absolute --git-common-dir)"
+  canonical_path "$common_dir"
 }
 
 slug() {
@@ -238,6 +264,90 @@ command_open() {
   open_session "$selected_path"
 }
 
+choose_repository() {
+  local current_path current_root search_root initial_root current_common parent_dir
+  local candidate candidate_root candidate_common known_common known_common_dir
+  local selection status selected_kind selected_path
+  local -a records repo_common_dirs
+
+  require_fzf
+  current_path="$(require_repo "$1")"
+  current_root="$(repo_root "$current_path")"
+  current_common="$(repo_common_dir "$current_root")"
+  initial_root="${WT_TMUX_REPOS_DIR:-$(dirname "$current_root")}"
+  search_root="$(canonical_path "$initial_root")"
+
+  while true; do
+    records=("[repo]"$'\t'"$current_root")
+    repo_common_dirs=("$current_common")
+    parent_dir="$(dirname "$search_root")"
+    if [[ "$parent_dir" != "$search_root" ]]; then
+      records+=("[..]"$'\t'"$parent_dir")
+    fi
+
+    while IFS= read -r candidate; do
+      if ! is_worktree "$candidate"; then
+        records+=("[dir]"$'\t'"$candidate")
+        continue
+      fi
+      candidate_root="$(repo_root "$candidate")"
+      candidate_common="$(repo_common_dir "$candidate_root")"
+
+      known_common=0
+      for known_common_dir in "${repo_common_dirs[@]}"; do
+        if [[ "$candidate_common" == "$known_common_dir" ]]; then
+          known_common=1
+          break
+        fi
+      done
+      [[ "$known_common" -eq 0 ]] || continue
+
+      records+=("[repo]"$'\t'"$candidate_root")
+      repo_common_dirs+=("$candidate_common")
+    done < <(find "$search_root" -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort)
+
+    set +e
+    selection="$(
+      printf '%s\n' "${records[@]}" |
+        "$FZF_BIN" \
+          --no-sort \
+          --layout=reverse \
+          --info=hidden \
+          --delimiter=$'\t' \
+          --with-nth=1,2 \
+          --prompt='Repository> ' \
+          --header="Current: $current_root | Search: $search_root | Enter: open | Esc: cancel"
+    )"
+    status=$?
+    set -e
+    [[ "$status" -eq 0 ]] || return "$status"
+    [[ -n "$selection" ]] || return 1
+
+    selected_kind="${selection%%$'\t'*}"
+    selected_path="${selection#*$'\t'}"
+    case "$selected_kind" in
+      "[repo]")
+        CHOSEN_REPOSITORY="$selected_path"
+        return 0
+        ;;
+      "[..]"|"[dir]")
+        search_root="$(canonical_path "$selected_path")"
+        ;;
+      *)
+        die "repository picker returned an unknown entry: $selection"
+        ;;
+    esac
+  done
+}
+
+command_open_ui() {
+  local current_root
+  current_root="$(repo_root "$PWD")"
+  CHOSEN_REPOSITORY=""
+  choose_repository "$current_root" || return 0
+  command_open "$CHOSEN_REPOSITORY"
+}
+
 command_feature() {
   local path branch base
   require_wt
@@ -335,23 +445,32 @@ command_remove() {
 }
 
 command_feature_ui() {
-  local branch base
+  local current_root branch base
+  current_root="$(repo_root "$PWD")"
+  CHOSEN_REPOSITORY=""
+  choose_repository "$current_root" || return 0
   branch="$(read_required 'Feature branch: ')"
   IFS= read -r -p 'Base branch [default]: ' base
-  command_feature "$PWD" "$branch" "${base:-^}"
+  command_feature "$CHOSEN_REPOSITORY" "$branch" "${base:-^}"
 }
 
 command_pr_ui() {
-  local number
+  local current_root number
+  current_root="$(repo_root "$PWD")"
+  CHOSEN_REPOSITORY=""
+  choose_repository "$current_root" || return 0
   number="$(read_required 'GitHub PR number: ')"
-  command_pr "$PWD" "$number"
+  command_pr "$CHOSEN_REPOSITORY" "$number"
 }
 
 command_branch_from_pr_ui() {
-  local branch number
+  local current_root branch number
+  current_root="$(repo_root "$PWD")"
+  CHOSEN_REPOSITORY=""
+  choose_repository "$current_root" || return 0
   branch="$(read_required 'New branch: ')"
   number="$(read_required 'Base GitHub PR number: ')"
-  command_branch_from_pr "$PWD" "$branch" "$number"
+  command_branch_from_pr "$CHOSEN_REPOSITORY" "$branch" "$number"
 }
 
 command_merge_ui() {
@@ -376,7 +495,7 @@ main() {
   local command_name="${1:-help}"
   shift || true
   case "$command_name" in
-    open-ui) [[ $# -eq 0 ]] || die "open-ui takes no arguments"; run_ui command_open "$PWD" ;;
+    open-ui) [[ $# -eq 0 ]] || die "open-ui takes no arguments"; run_ui command_open_ui ;;
     feature-ui) [[ $# -eq 0 ]] || die "feature-ui takes no arguments"; run_ui command_feature_ui ;;
     pr-ui) [[ $# -eq 0 ]] || die "pr-ui takes no arguments"; run_ui command_pr_ui ;;
     branch-from-pr-ui) [[ $# -eq 0 ]] || die "branch-from-pr-ui takes no arguments"; run_ui command_branch_from_pr_ui ;;

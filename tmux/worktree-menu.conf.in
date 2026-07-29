@@ -17,10 +17,10 @@ bind-key m display-menu -T "tmux: windows, panes, worktrees" \
   "Delete session"    K "confirm-before -p 'Delete session #S? (y/n)' kill-session" \
   "Detach"            d "detach-client" \
   "" \
-  "wt: open/switch worktree"       w "display-popup -E -w 95% -h 90% -d \"#{pane_current_path}\" -T \"wt: switch worktree\" \"@WT_TMUX_BIN@ open-ui\"" \
-  "wt: new feature branch"         N "display-popup -E -w 80% -h 60% -d \"#{pane_current_path}\" -T \"wt: new feature\" \"@WT_TMUX_BIN@ feature-ui\"" \
-  "wt: review GitHub PR"           R "display-popup -E -w 80% -h 60% -d \"#{pane_current_path}\" -T \"wt: review PR\" \"@WT_TMUX_BIN@ pr-ui\"" \
-  "wt: new branch from GitHub PR"  B "display-popup -E -w 80% -h 60% -d \"#{pane_current_path}\" -T \"wt: branch from PR\" \"@WT_TMUX_BIN@ branch-from-pr-ui\"" \
+  "wt: open/switch worktree"       w "display-popup -E -w 95% -h 90% -d \"#{pane_current_path}\" -T \"wt: choose repository/worktree\" \"@WT_TMUX_BIN@ open-ui\"" \
+  "wt: new feature branch"         N "display-popup -E -w 95% -h 90% -d \"#{pane_current_path}\" -T \"wt: new feature\" \"@WT_TMUX_BIN@ feature-ui\"" \
+  "wt: review GitHub PR"           R "display-popup -E -w 95% -h 90% -d \"#{pane_current_path}\" -T \"wt: review PR\" \"@WT_TMUX_BIN@ pr-ui\"" \
+  "wt: new branch from GitHub PR"  B "display-popup -E -w 95% -h 90% -d \"#{pane_current_path}\" -T \"wt: branch from PR\" \"@WT_TMUX_BIN@ branch-from-pr-ui\"" \
   "wt: worktree status"            W "display-popup -E -w 95% -h 85% -d \"#{pane_current_path}\" -T \"wt: status\" \"@WT_TMUX_BIN@ list-ui\"" \
   "wt: commit changes"             C "display-popup -E -w 90% -h 80% -d \"#{pane_current_path}\" -T \"wt: commit\" \"@WT_TMUX_BIN@ commit-ui\"" \
   "wt: publish GitHub PR"          G "display-popup -E -w 90% -h 80% -d \"#{pane_current_path}\" -T \"wt: publish PR\" \"@WT_TMUX_BIN@ publish-ui\"" \

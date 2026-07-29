@@ -11,7 +11,7 @@ CONFIG_PATH="$CONFIG_DIR/worktree-menu.conf"
 BEGIN_MARKER="# BEGIN worktree-tmux-menu"
 END_MARKER="# END worktree-tmux-menu"
 
-for command_name in git jq tmux wt; do
+for command_name in fzf git jq tmux wt; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     printf 'Missing required command: %s\n' "$command_name" >&2
     exit 1
